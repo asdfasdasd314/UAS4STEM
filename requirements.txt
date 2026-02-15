@@ -1,0 +1,4 @@
+picamera2
+picamera
+
+matplotlib
