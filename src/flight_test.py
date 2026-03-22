@@ -7,7 +7,9 @@ from pymavlink import mavutil
 # ==============================================================================
 CONNECTION_STRING = 'tcp:172.17.14.51:5762'
 # CONNECTION_STRING = 'udpin:0.0.0.0:14550'
-TARGET_ALTITUDE = 10  # Meters
+TARGET_ALTITUDE = 0.8  # Meters
+
+max, min = 1901, 1099
 
 # ==============================================================================
 # MAIN SCRIPT
