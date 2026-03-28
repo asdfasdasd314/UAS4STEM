@@ -1,5 +1,3 @@
-exit(0)
-
 import time
 import sys
 from PIL import Image
