@@ -33,7 +33,6 @@ import cv2
 import time
 import os
 import json
-import math
 import numpy as np
 from datetime import datetime
 from pymavlink import mavutil
@@ -57,16 +56,6 @@ parser.add_argument("--height", type=int, default=2592,
                     help="Capture height (default 2592 = full sensor)")
 parser.add_argument("--cooldown", type=float, default=2.0,
                     help="Per-target re-log cooldown in seconds (default 2.0)")
-parser.add_argument("--stream-images", action="store_true",
-                    help="Stream downscaled preview frames to GCS over MAVLink")
-parser.add_argument("--stream-width", type=int, default=640,
-                    help="Stream preview width in pixels (default 640)")
-parser.add_argument("--stream-height", type=int, default=360,
-                    help="Stream preview height in pixels (default 360)")
-parser.add_argument("--stream-quality", type=int, default=60,
-                    help="Stream JPEG quality 1-100 (default 60)")
-parser.add_argument("--stream-chunks-per-loop", type=int, default=8,
-                    help="ENCAPSULATED_DATA packets sent per main loop (default 8)")
 args = parser.parse_args()
 
 # ==============================================================================
@@ -141,55 +130,6 @@ def send_to_gcs(text, severity=mavutil.mavlink.MAV_SEVERITY_INFO):
             time.sleep(0.05)
 
 # ==============================================================================
-# 3b. MAVLINK IMAGE STREAM (non-blocking)
-# ==============================================================================
-MAVLINK_DATA_STREAM_IMG_JPEG = 1
-CHUNK_PAYLOAD = 253
-
-
-class ImageStreamTransfer:
-    """Send one JPEG over DATA_TRANSMISSION_HANDSHAKE + ENCAPSULATED_DATA."""
-
-    def __init__(self):
-        self.active = False
-        self.data = b""
-        self.seq = 0
-        self.packets = 0
-
-    def start(self, jpeg_bytes, width, height, quality):
-        self.data = jpeg_bytes
-        self.packets = math.ceil(len(jpeg_bytes) / CHUNK_PAYLOAD)
-        self.seq = 0
-        self.active = True
-        master.mav.data_transmission_handshake_send(
-            MAVLINK_DATA_STREAM_IMG_JPEG,
-            len(jpeg_bytes),
-            width,
-            height,
-            self.packets,
-            CHUNK_PAYLOAD,
-            quality,
-        )
-
-    def tick(self, max_chunks):
-        if not self.active:
-            return
-        sent = 0
-        while sent < max_chunks and self.seq < self.packets:
-            start = self.seq * CHUNK_PAYLOAD
-            chunk = self.data[start:start + CHUNK_PAYLOAD]
-            if len(chunk) < CHUNK_PAYLOAD:
-                chunk = chunk + bytes(CHUNK_PAYLOAD - len(chunk))
-            master.mav.encapsulated_data_send(self.seq, chunk)
-            self.seq += 1
-            sent += 1
-        if self.seq >= self.packets:
-            self.active = False
-
-
-image_transfer = ImageStreamTransfer()
-
-# ==============================================================================
 # 4. CAMERA SETUP - FULL RESOLUTION, FIXED FOCUS
 # ==============================================================================
 picam2 = Picamera2()
@@ -248,13 +188,9 @@ STATS_INTERVAL = 30.0
 
 # Save at most one debug frame per second (first capture in each second).
 last_debug_save_second = None
-last_streamed_second = None
 
 headless = not args.display
 print(f"Display mode: {'PREVIEW WINDOW' if args.display else 'HEADLESS'}")
-if args.stream_images:
-    print(f"Image stream: {args.stream_width}x{args.stream_height} "
-          f"q={args.stream_quality} chunks/loop={args.stream_chunks_per_loop}")
 print("Starting field scanner...")
 send_to_gcs("QR SCRIPT: STARTED (FIELD MODE)")
 
@@ -309,27 +245,6 @@ try:
             debug_path = os.path.join(images_dir, f"frame_{debug_timestamp}.jpg")
             cv2.imwrite(debug_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
             last_debug_save_second = current_second
-
-        # ---- Stream downscaled preview to GCS when link is idle ----
-        if args.stream_images:
-            image_transfer.tick(args.stream_chunks_per_loop)
-            if not image_transfer.active and current_second != last_streamed_second:
-                preview = cv2.resize(
-                    frame, (args.stream_width, args.stream_height)
-                )
-                ok, jpeg_buf = cv2.imencode(
-                    ".jpg",
-                    preview,
-                    [cv2.IMWRITE_JPEG_QUALITY, args.stream_quality],
-                )
-                if ok:
-                    image_transfer.start(
-                        jpeg_buf.tobytes(),
-                        args.stream_width,
-                        args.stream_height,
-                        args.stream_quality,
-                    )
-                    last_streamed_second = current_second
 
         # ---- Decode (grayscale: ~3x less data for pyzbar to chew on) ----
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)

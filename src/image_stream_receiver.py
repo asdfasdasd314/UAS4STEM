@@ -1,24 +1,25 @@
 #!/usr/bin/env python3
 """
-UAS4STEM - GCS MAVLink image stream viewer
-==========================================
-Reassembles JPEG previews sent by qr_field_scanner.py over the standard
+UAS4STEM - GCS MAVLink image stream receiver
+============================================
+Reassembles JPEG previews sent by image_stream_sender.py over the standard
 MAVLink image transmission protocol (DATA_TRANSMISSION_HANDSHAKE +
 ENCAPSULATED_DATA) and displays them in a live matplotlib window.
 
 Run on the GCS laptop:
-    python3 src/image_stream_viewer.py
+    python3 src/image_stream_receiver.py
 
 If Mission Planner already uses UDP port 14550, forward a copy of the
 telemetry stream and point this script at the forwarded port:
     mavproxy.py --master=<vehicle-link> --out=udp:127.0.0.1:14551
-    python3 src/image_stream_viewer.py --connection udp:127.0.0.1:14551
+    python3 src/image_stream_receiver.py --connection udp:127.0.0.1:14551
 
-Bench test without an aircraft (sender must also target the same port):
+Bench test without an aircraft:
     # Terminal 1
-    python3 src/image_stream_viewer.py --connection udp:127.0.0.1:14550
-    # Terminal 2 on the Pi (or any machine with a camera + pymavlink)
-    python3 src/qr_field_scanner.py --stream-images
+    python3 src/image_stream_receiver.py --connection udp:127.0.0.1:14550
+    # Terminal 2
+    python3 src/image_stream_sender.py --image path/to/test.jpg \\
+        --connection udpout:127.0.0.1:14550 --no-wait-heartbeat
 """
 
 import argparse
@@ -90,7 +91,7 @@ def decode_jpeg_rgb(jpeg_bytes):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="UAS4STEM MAVLink image viewer")
+    parser = argparse.ArgumentParser(description="UAS4STEM MAVLink image receiver")
     parser.add_argument(
         "--connection",
         default="udp:0.0.0.0:14550",
@@ -140,4 +141,4 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\nViewer stopped.")
+        print("\nReceiver stopped.")
