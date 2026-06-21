@@ -2,3 +2,5 @@ picamera2
 picamera
 
 matplotlib
+pymavlink
+opencv-python
