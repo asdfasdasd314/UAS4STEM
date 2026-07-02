@@ -21,6 +21,7 @@ import argparse
 import math
 import os
 import time
+from datetime import datetime
 
 import cv2
 from pymavlink import mavutil
@@ -33,18 +34,21 @@ DEFAULT_CONNECTION = "udpin:0.0.0.0:14550"
 class ImageStreamTransfer:
     """Send one JPEG over DATA_TRANSMISSION_HANDSHAKE + ENCAPSULATED_DATA."""
 
-    def __init__(self, mav):
+    def __init__(self, mav, debug=False):
         self.mav = mav
+        self.debug = debug
         self.active = False
         self.data = b""
         self.seq = 0
         self.packets = 0
+        self.last_progress_report = 0
 
     def start(self, jpeg_bytes, width, height, quality):
         self.data = jpeg_bytes
         self.packets = math.ceil(len(jpeg_bytes) / CHUNK_PAYLOAD)
         self.seq = 0
         self.active = True
+        self.last_progress_report = 0
         self.mav.data_transmission_handshake_send(
             MAVLINK_DATA_STREAM_IMG_JPEG,
             len(jpeg_bytes),
@@ -54,6 +58,12 @@ class ImageStreamTransfer:
             CHUNK_PAYLOAD,
             quality,
         )
+        if self.debug:
+            print(
+                "Sent handshake: "
+                f"size={len(jpeg_bytes)} bytes, {width}x{height}, "
+                f"packets={self.packets}, payload={CHUNK_PAYLOAD}, quality={quality}"
+            )
 
     def tick(self, max_chunks):
         if not self.active:
@@ -67,8 +77,28 @@ class ImageStreamTransfer:
             self.mav.encapsulated_data_send(self.seq, chunk)
             self.seq += 1
             sent += 1
+        if self.debug and self.seq != self.last_progress_report:
+            report_every = max(1, math.ceil(self.packets / 10))
+            if self.seq >= self.packets or self.seq - self.last_progress_report >= report_every:
+                print(f"Sent chunks: {self.seq}/{self.packets}")
+                self.last_progress_report = self.seq
         if self.seq >= self.packets:
             self.active = False
+            if self.debug:
+                print("Transfer complete")
+
+
+def drain_mavlink(master, debug=False):
+    """Drain pending MAVLink messages without blocking forever."""
+    drained = 0
+    while True:
+        msg = master.recv_match(blocking=False)
+        if msg is None:
+            break
+        drained += 1
+    if debug and drained:
+        print(f"Drained {drained} MAVLink messages")
+    return drained
 
 
 def load_image(path):
@@ -76,6 +106,39 @@ def load_image(path):
     if img is None:
         raise ValueError(f"Could not read image: {path}")
     return img
+
+
+class PiCameraSource:
+    """Capture frames from Raspberry Pi Camera using Picamera2."""
+
+    def __init__(self, width, height, debug=False):
+        try:
+            from picamera2 import Picamera2
+        except ImportError as exc:
+            raise RuntimeError(
+                "Picamera2 is required for --source camera. "
+                "Use --image or --source image-dir for bench testing."
+            ) from exc
+
+        self.debug = debug
+        self.picam2 = Picamera2()
+        config = self.picam2.create_still_configuration(
+            main={"size": (width, height), "format": "BGR888"},
+            buffer_count=2,
+        )
+        self.picam2.configure(config)
+        self.picam2.start()
+        if self.debug:
+            print(f"Camera started with capture size {width}x{height}")
+        time.sleep(1.0)
+
+    def read(self):
+        img = self.picam2.capture_array()
+        return img, "camera"
+
+    def close(self):
+        self.picam2.stop()
+        self.picam2.close()
 
 
 def encode_preview(img, width, height, quality):
@@ -101,6 +164,18 @@ def images_in_dir(directory):
     return paths
 
 
+def save_jpeg(directory, jpeg_bytes, label, frame_number):
+    os.makedirs(directory, exist_ok=True)
+    safe_label = os.path.basename(label).replace(os.sep, "_") or "frame"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    path = os.path.join(
+        directory, f"sent_{frame_number:05d}_{timestamp}_{safe_label}.jpg"
+    )
+    with open(path, "wb") as f:
+        f.write(jpeg_bytes)
+    return path
+
+
 def main():
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     default_images_dir = os.path.join(project_root, "images")
@@ -114,6 +189,12 @@ def main():
     parser.add_argument(
         "--image",
         help="Send this image file (for bench testing without a camera)",
+    )
+    parser.add_argument(
+        "--source",
+        choices=("camera", "image-dir"),
+        default="camera",
+        help="Image source when --image is not set (default camera)",
     )
     parser.add_argument(
         "--images-dir",
@@ -132,9 +213,13 @@ def main():
                         help="ENCAPSULATED_DATA packets sent per loop (default 8)")
     parser.add_argument("--no-wait-heartbeat", action="store_true",
                         help="Start sending immediately (for local bench tests)")
+    parser.add_argument("--save-sent-dir",
+                        help="Save each encoded JPEG before sending")
+    parser.add_argument("--debug", action="store_true",
+                        help="Print detailed sender diagnostics")
     args = parser.parse_args()
 
-    if not args.image and not os.path.isdir(args.images_dir):
+    if args.source == "image-dir" and not args.image and not os.path.isdir(args.images_dir):
         os.makedirs(args.images_dir, exist_ok=True)
 
     print(f"Connecting on {args.connection}...")
@@ -148,65 +233,84 @@ def main():
         master.wait_heartbeat()
         print(f"Heartbeat received (system {master.target_system})")
 
-    transfer = ImageStreamTransfer(master.mav)
+    transfer = ImageStreamTransfer(master.mav, debug=args.debug)
     last_send_time = 0.0
     cached_image = None
+    camera_source = None
     cycle_index = 0
+    frame_number = 0
 
     if args.image:
         cached_image = load_image(args.image)
-        print(f"Test mode: sending {args.image} every {args.interval}s")
-    else:
+        print(f"Image source: fixed file {args.image}")
+        print(f"Loaded frame shape: {cached_image.shape}")
+    elif args.source == "image-dir":
         image_paths = images_in_dir(args.images_dir)
         if not image_paths:
             print(f"No images found in {args.images_dir}")
             return
-        print(f"Cycling {len(image_paths)} images in {args.images_dir} every {args.interval}s")
+        print(f"Image source: cycling {len(image_paths)} images in {args.images_dir}")
         for path in image_paths:
             print(f"  - {os.path.basename(path)}")
+    else:
+        print("Image source: Raspberry Pi Camera")
+        camera_source = PiCameraSource(args.width, args.height, debug=args.debug)
 
     print(f"Stream size: {args.width}x{args.height} q={args.quality}")
 
-    while True:
-        current_time = time.time()
-
+    try:
         while True:
-            master.recv_match(blocking=False)
+            current_time = time.time()
 
-        transfer.tick(args.chunks_per_loop)
-        if transfer.active:
-            time.sleep(0.01)
-            continue
-
-        if current_time - last_send_time < args.interval:
-            time.sleep(0.05)
-            continue
-
-        img = None
-        label = None
-        if args.image:
-            img = cached_image
-            label = args.image
-        else:
-            image_paths = images_in_dir(args.images_dir)
-            if not image_paths:
-                time.sleep(0.2)
-                continue
-            path = image_paths[cycle_index % len(image_paths)]
-            img = load_image(path)
-            label = os.path.basename(path)
-            cycle_index += 1
-
-        jpeg_bytes = encode_preview(img, args.width, args.height, args.quality)
-        transfer.start(jpeg_bytes, args.width, args.height, args.quality)
-        last_send_time = current_time
-        print(f"Queued {label} ({len(jpeg_bytes)} bytes, {transfer.packets} packets)")
-
-        while transfer.active:
-            while True:
-                master.recv_match(blocking=False)
+            drain_mavlink(master, debug=args.debug)
             transfer.tick(args.chunks_per_loop)
-            time.sleep(0.01)
+            if transfer.active:
+                time.sleep(0.01)
+                continue
+
+            if current_time - last_send_time < args.interval:
+                time.sleep(0.05)
+                continue
+
+            if args.image:
+                img = cached_image
+                label = args.image
+            elif args.source == "image-dir":
+                image_paths = images_in_dir(args.images_dir)
+                if not image_paths:
+                    if args.debug:
+                        print(f"No images currently found in {args.images_dir}")
+                    time.sleep(0.2)
+                    continue
+                path = image_paths[cycle_index % len(image_paths)]
+                img = load_image(path)
+                label = os.path.basename(path)
+                cycle_index += 1
+            else:
+                img, label = camera_source.read()
+
+            frame_number += 1
+            if args.debug:
+                print(f"Frame #{frame_number}: source={label}, shape={img.shape}")
+
+            jpeg_bytes = encode_preview(img, args.width, args.height, args.quality)
+            if args.debug:
+                print(f"Encoded JPEG: {len(jpeg_bytes)} bytes")
+            if args.save_sent_dir:
+                saved_path = save_jpeg(args.save_sent_dir, jpeg_bytes, label, frame_number)
+                print(f"Saved sent JPEG: {saved_path}")
+
+            transfer.start(jpeg_bytes, args.width, args.height, args.quality)
+            last_send_time = current_time
+            print(f"Queued {label} ({len(jpeg_bytes)} bytes, {transfer.packets} packets)")
+
+            while transfer.active:
+                drain_mavlink(master, debug=args.debug)
+                transfer.tick(args.chunks_per_loop)
+                time.sleep(0.01)
+    finally:
+        if camera_source is not None:
+            camera_source.close()
 
 
 if __name__ == "__main__":
