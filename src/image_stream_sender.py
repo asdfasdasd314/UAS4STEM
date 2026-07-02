@@ -11,7 +11,7 @@ Run on the Pi (companion computer, alongside qr_field_scanner.py):
 
 Bench test without a camera (send a fixed file repeatedly):
     # Terminal 1
-    python3 src/image_stream_receiver.py --connection udp:127.0.0.1:14550
+    python3 src/image_stream_receiver.py --connection udpin:0.0.0.0:14550
     # Terminal 2
     python3 src/image_stream_sender.py --image path/to/test.jpg \\
         --connection udpout:127.0.0.1:14550 --no-wait-heartbeat
@@ -29,6 +29,8 @@ from pymavlink import mavutil
 MAVLINK_DATA_STREAM_IMG_JPEG = 1
 CHUNK_PAYLOAD = 253
 DEFAULT_CONNECTION = "udpin:0.0.0.0:14550"
+DEFAULT_SOURCE_SYSTEM = 200
+DEFAULT_SOURCE_COMPONENT = 191
 
 
 class ImageStreamTransfer:
@@ -213,6 +215,10 @@ def main():
                         help="ENCAPSULATED_DATA packets sent per loop (default 8)")
     parser.add_argument("--no-wait-heartbeat", action="store_true",
                         help="Start sending immediately (for local bench tests)")
+    parser.add_argument("--source-system", type=int, default=DEFAULT_SOURCE_SYSTEM,
+                        help=f"MAVLink source system id (default {DEFAULT_SOURCE_SYSTEM})")
+    parser.add_argument("--source-component", type=int, default=DEFAULT_SOURCE_COMPONENT,
+                        help=f"MAVLink source component id (default {DEFAULT_SOURCE_COMPONENT})")
     parser.add_argument("--save-sent-dir",
                         help="Save each encoded JPEG before sending")
     parser.add_argument("--debug", action="store_true",
@@ -224,7 +230,13 @@ def main():
 
     print(f"Connecting on {args.connection}...")
     master = mavutil.mavlink_connection(
-        args.connection, source_system=1, source_component=191
+        args.connection,
+        source_system=args.source_system,
+        source_component=args.source_component,
+    )
+    print(
+        "MAVLink sender identity: "
+        f"system={args.source_system}, component={args.source_component}"
     )
     if args.no_wait_heartbeat:
         print("Skipping heartbeat wait (--no-wait-heartbeat)")

@@ -12,11 +12,11 @@ Run on the GCS laptop:
 If Mission Planner already uses UDP port 14550, forward a copy of the
 telemetry stream and point this script at the forwarded port:
     mavproxy.py --master=<vehicle-link> --out=udp:127.0.0.1:14551
-    python3 src/image_stream_receiver.py --connection udp:127.0.0.1:14551
+    python3 src/image_stream_receiver.py --connection udpin:0.0.0.0:14551
 
 Bench test without an aircraft:
     # Terminal 1
-    python3 src/image_stream_receiver.py --connection udp:127.0.0.1:14550
+    python3 src/image_stream_receiver.py --connection udpin:0.0.0.0:14550
     # Terminal 2
     python3 src/image_stream_sender.py --image path/to/test.jpg \\
         --connection udpout:127.0.0.1:14550 --no-wait-heartbeat
@@ -24,6 +24,7 @@ Bench test without an aircraft:
 
 import argparse
 import os
+import time
 from datetime import datetime
 
 import cv2
@@ -32,6 +33,7 @@ import numpy as np
 from pymavlink import mavutil
 
 CHUNK_PAYLOAD = 253
+DEFAULT_CONNECTION = "udpin:0.0.0.0:14550"
 
 
 def chunk_bytes(data_field):
@@ -147,8 +149,8 @@ def main():
     parser = argparse.ArgumentParser(description="UAS4STEM MAVLink image receiver")
     parser.add_argument(
         "--connection",
-        default="udp:0.0.0.0:14550",
-        help="MAVLink connection string (default udp:0.0.0.0:14550)",
+        default=DEFAULT_CONNECTION,
+        help=f"MAVLink connection string (default {DEFAULT_CONNECTION})",
     )
     parser.add_argument("--debug", action="store_true",
                         help="Print detailed receiver diagnostics")
@@ -156,6 +158,8 @@ def main():
                         help="Save each fully reassembled JPEG before decode")
     parser.add_argument("--no-display", action="store_true",
                         help="Do not open a matplotlib window")
+    parser.add_argument("--status-interval", type=float, default=5.0,
+                        help="Seconds between no-image status messages (default 5.0)")
     args = parser.parse_args()
 
     print(f"Listening for image stream on {args.connection}...")
@@ -177,19 +181,34 @@ def main():
 
     frames_shown = 0
     frames_received = 0
+    total_messages = 0
+    image_messages = 0
+    last_status = time.time()
     while True:
         msg = master.recv_match(blocking=True, timeout=1.0)
         if msg is None:
             if not args.no_display:
                 plt.pause(0.01)
+            now = time.time()
+            if now - last_status >= args.status_interval:
+                print(
+                    "Waiting for image packets... "
+                    f"total_mavlink_messages={total_messages}, "
+                    f"image_messages={image_messages}, "
+                    f"frames={frames_received}"
+                )
+                last_status = now
             continue
 
+        total_messages += 1
         msg_type = msg.get_type()
         if args.debug:
             print(f"Received MAVLink message: {msg_type}")
         if msg_type == "DATA_TRANSMISSION_HANDSHAKE":
+            image_messages += 1
             receiver.on_handshake(msg)
         elif msg_type == "ENCAPSULATED_DATA":
+            image_messages += 1
             jpeg_bytes = receiver.on_chunk(msg)
             if jpeg_bytes is None:
                 continue
