@@ -6,8 +6,41 @@ Reassembles JPEG previews sent by image_stream_sender.py over the standard
 MAVLink image transmission protocol (DATA_TRANSMISSION_HANDSHAKE +
 ENCAPSULATED_DATA) and displays them in a live matplotlib window.
 
-Run on the GCS laptop:
-    python3 src/image_stream_receiver.py
+Field telemetry-radio architecture:
+    Pi camera
+      -> image_stream_sender.py on the Pi
+      -> Pi serial MAVLink connection to Pixhawk
+      -> Pixhawk telemetry radio
+      -> GCS telemetry radio
+      -> Mission Planner or MAVProxy UDP forwarding
+      -> image_stream_receiver.py
+
+The receiver normally listens on UDP. Do not open the telemetry radio COM port
+directly in this script if Mission Planner also needs it; a serial COM port is
+usually owned by one program at a time. Use Mission Planner or MAVProxy to open
+the GCS telemetry radio and forward a MAVLink copy to UDP.
+
+Run this receiver on the GCS laptop after UDP forwarding is configured:
+    python src/image_stream_receiver.py --connection udpin:0.0.0.0:14551
+
+Windows GCS option A - MAVProxy owns the telemetry radio COM port and forwards
+copies to Mission Planner and this receiver:
+    mavproxy.py --master=COM5 --baudrate 57600 \
+        --out=udp:127.0.0.1:14550 \
+        --out=udp:127.0.0.1:14551
+
+    Mission Planner connects to UDP 127.0.0.1:14550.
+    image_stream_receiver.py listens on udpin:0.0.0.0:14551.
+
+Windows GCS option B - Mission Planner owns the telemetry radio COM port and
+forwards MAVLink to UDP:
+    Mission Planner connects to COM5 at the telemetry radio baud, commonly
+    57600 or 115200, then forwards/output MAVLink UDP to 127.0.0.1:14551.
+
+    python src/image_stream_receiver.py --connection udpin:0.0.0.0:14551
+
+Wi-Fi/direct UDP bench testing is still useful for proving image transmission
+before using the telemetry radio.
 
 If Mission Planner already uses UDP port 14550, forward a copy of the
 telemetry stream and point this script at the forwarded port:
@@ -28,6 +61,7 @@ import time
 from datetime import datetime
 
 import cv2
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 from pymavlink import mavutil
@@ -136,12 +170,29 @@ def decode_jpeg_rgb(jpeg_bytes):
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 
+def image_stats(img):
+    return (
+        int(np.min(img)),
+        int(np.max(img)),
+        float(np.mean(img)),
+    )
+
+
 def save_jpeg(directory, jpeg_bytes, frame_number):
     os.makedirs(directory, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     path = os.path.join(directory, f"received_{frame_number:05d}_{timestamp}.jpg")
     with open(path, "wb") as f:
         f.write(jpeg_bytes)
+    return path
+
+
+def save_rgb_image(directory, rgb, frame_number):
+    os.makedirs(directory, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    path = os.path.join(directory, f"decoded_{frame_number:05d}_{timestamp}.jpg")
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    cv2.imwrite(path, bgr)
     return path
 
 
@@ -156,6 +207,8 @@ def main():
                         help="Print detailed receiver diagnostics")
     parser.add_argument("--save-received-dir",
                         help="Save each fully reassembled JPEG before decode")
+    parser.add_argument("--save-decoded-dir",
+                        help="Save each decoded RGB frame after JPEG decode")
     parser.add_argument("--no-display", action="store_true",
                         help="Do not open a matplotlib window")
     parser.add_argument("--status-interval", type=float, default=5.0,
@@ -172,12 +225,15 @@ def main():
     if not args.no_display:
         fig, ax = plt.subplots()
         ax.set_title("MAVLink image stream")
-        placeholder = np.zeros((360, 640, 3), dtype=np.uint8)
-        im = ax.imshow(placeholder)
+        ax.axis("off")
         plt.ion()
-        plt.show()
+        plt.show(block=False)
+        print(
+            "Display enabled: matplotlib live window should show the latest decoded frame "
+            f"(backend={matplotlib.get_backend()})"
+        )
     else:
-        print("Display disabled (--no-display)")
+        print("Display disabled (--no-display); decoded frames will not be shown in matplotlib")
 
     frames_shown = 0
     frames_received = 0
@@ -197,6 +253,12 @@ def main():
                     f"image_messages={image_messages}, "
                     f"frames={frames_received}"
                 )
+                if total_messages == 0:
+                    print(
+                        "No MAVLink traffic is reaching this receiver. "
+                        "Check the receiver port and sender target; for direct Pi-to-laptop testing, "
+                        "run the sender with --gcs-udpout <laptop-ip>:14550."
+                    )
                 last_status = now
             continue
 
@@ -225,15 +287,28 @@ def main():
                 )
                 continue
             if args.debug:
-                print(f"Decoded JPEG: {rgb.shape[1]}x{rgb.shape[0]}")
+                min_px, max_px, mean_px = image_stats(rgb)
+                print(
+                    f"Decoded JPEG: {rgb.shape[1]}x{rgb.shape[0]} "
+                    f"min={min_px} max={max_px} mean={mean_px:.1f}"
+                )
+            if args.save_decoded_dir:
+                saved_path = save_rgb_image(args.save_decoded_dir, rgb, frames_received)
+                print(f"Saved decoded image: {saved_path}")
             if not args.no_display:
-                im.set_data(rgb)
+                if im is None:
+                    im = ax.imshow(rgb)
+                else:
+                    im.set_data(rgb)
                 ax.set_xlim(0, rgb.shape[1])
                 ax.set_ylim(rgb.shape[0], 0)
-                fig.canvas.draw_idle()
-                plt.pause(0.001)
+                fig.canvas.draw()
+                fig.canvas.flush_events()
+                plt.pause(0.05)
                 frames_shown += 1
                 print(f"Displayed frame #{frames_shown} ({rgb.shape[1]}x{rgb.shape[0]})")
+            elif args.debug:
+                print("Decoded frame not displayed because --no-display is active")
 
 
 if __name__ == "__main__":

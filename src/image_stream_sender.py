@@ -6,8 +6,26 @@ Sends the most recent image over the standard MAVLink image transmission
 protocol (DATA_TRANSMISSION_HANDSHAKE + ENCAPSULATED_DATA). Skips frames
 while a transfer is in progress and sends at most one image per interval.
 
-Run on the Pi (companion computer, alongside qr_field_scanner.py):
-    python3 src/image_stream_sender.py
+Field telemetry-radio architecture:
+    Pi camera
+      -> image_stream_sender.py
+      -> Pi serial MAVLink connection to Pixhawk
+      -> Pixhawk telemetry radio
+      -> GCS telemetry radio
+      -> Mission Planner or MAVProxy UDP forwarding
+      -> image_stream_receiver.py
+
+Run on the Pi through the Pixhawk telemetry path:
+    python3 src/image_stream_sender.py --connection /dev/serial0 --baud 57600
+
+Common Raspberry Pi/Pixhawk serial paths:
+    /dev/serial0, /dev/ttyAMA0, /dev/ttyUSB0, /dev/ttyACM0
+
+The baud rate must match the Pixhawk TELEM port configuration. Common values
+are 57600 and 115200.
+
+Wi-Fi/direct UDP bench testing is still useful for proving the camera,
+packetization, and receiver before using the telemetry radio.
 
 Bench test without a camera (send a fixed file repeatedly):
     # Terminal 1
@@ -24,11 +42,13 @@ import time
 from datetime import datetime
 
 import cv2
+import numpy as np
 from pymavlink import mavutil
 
 MAVLINK_DATA_STREAM_IMG_JPEG = 1
 CHUNK_PAYLOAD = 253
 DEFAULT_CONNECTION = "udpin:0.0.0.0:14550"
+DEFAULT_BAUD = 57600
 DEFAULT_SOURCE_SYSTEM = 200
 DEFAULT_SOURCE_COMPONENT = 191
 
@@ -36,8 +56,8 @@ DEFAULT_SOURCE_COMPONENT = 191
 class ImageStreamTransfer:
     """Send one JPEG over DATA_TRANSMISSION_HANDSHAKE + ENCAPSULATED_DATA."""
 
-    def __init__(self, mav, debug=False):
-        self.mav = mav
+    def __init__(self, mav_outputs, debug=False):
+        self.mav_outputs = mav_outputs
         self.debug = debug
         self.active = False
         self.data = b""
@@ -51,15 +71,16 @@ class ImageStreamTransfer:
         self.seq = 0
         self.active = True
         self.last_progress_report = 0
-        self.mav.data_transmission_handshake_send(
-            MAVLINK_DATA_STREAM_IMG_JPEG,
-            len(jpeg_bytes),
-            width,
-            height,
-            self.packets,
-            CHUNK_PAYLOAD,
-            quality,
-        )
+        for mav in self.mav_outputs:
+            mav.data_transmission_handshake_send(
+                MAVLINK_DATA_STREAM_IMG_JPEG,
+                len(jpeg_bytes),
+                width,
+                height,
+                self.packets,
+                CHUNK_PAYLOAD,
+                quality,
+            )
         if self.debug:
             print(
                 "Sent handshake: "
@@ -76,7 +97,8 @@ class ImageStreamTransfer:
             chunk = self.data[start:start + CHUNK_PAYLOAD]
             if len(chunk) < CHUNK_PAYLOAD:
                 chunk = chunk + bytes(CHUNK_PAYLOAD - len(chunk))
-            self.mav.encapsulated_data_send(self.seq, chunk)
+            for mav in self.mav_outputs:
+                mav.encapsulated_data_send(self.seq, chunk)
             self.seq += 1
             sent += 1
         if self.debug and self.seq != self.last_progress_report:
@@ -110,10 +132,27 @@ def load_image(path):
     return img
 
 
+def image_stats(img):
+    return (
+        int(np.min(img)),
+        int(np.max(img)),
+        float(np.mean(img)),
+    )
+
+
 class PiCameraSource:
     """Capture frames from Raspberry Pi Camera using Picamera2."""
 
-    def __init__(self, width, height, debug=False):
+    def __init__(
+        self,
+        width,
+        height,
+        warmup,
+        exposure_us=None,
+        gain=None,
+        exposure_value=0.0,
+        debug=False,
+    ):
         try:
             from picamera2 import Picamera2
         except ImportError as exc:
@@ -130,12 +169,29 @@ class PiCameraSource:
         )
         self.picam2.configure(config)
         self.picam2.start()
+        controls = {
+            "AeEnable": exposure_us is None,
+            "AwbEnable": True,
+        }
+        if exposure_us is None:
+            controls["ExposureValue"] = exposure_value
+        else:
+            controls["ExposureTime"] = exposure_us
+        if gain is not None:
+            controls["AnalogueGain"] = gain
+        try:
+            self.picam2.set_controls(controls)
+            if self.debug:
+                print(f"Camera controls: {controls}")
+        except Exception as exc:
+            print(f"Camera control warning: {exc}")
         if self.debug:
             print(f"Camera started with capture size {width}x{height}")
-        time.sleep(1.0)
+            print(f"Warming camera for {warmup:.1f}s")
+        time.sleep(warmup)
 
     def read(self):
-        img = self.picam2.capture_array()
+        img = self.picam2.capture_array("main")
         return img, "camera"
 
     def close(self):
@@ -151,6 +207,13 @@ def encode_preview(img, width, height, quality):
     if not ok:
         raise ValueError("JPEG encode failed")
     return jpeg_buf.tobytes()
+
+
+def auto_brighten(img):
+    min_px, max_px, _ = image_stats(img)
+    if max_px <= min_px:
+        return img
+    return cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX)
 
 
 def images_in_dir(directory):
@@ -188,6 +251,8 @@ def main():
         default=DEFAULT_CONNECTION,
         help=f"MAVLink connection string (default {DEFAULT_CONNECTION})",
     )
+    parser.add_argument("--baud", type=int, default=DEFAULT_BAUD,
+                        help=f"Serial MAVLink baud rate (default {DEFAULT_BAUD})")
     parser.add_argument(
         "--image",
         help="Send this image file (for bench testing without a camera)",
@@ -215,6 +280,18 @@ def main():
                         help="ENCAPSULATED_DATA packets sent per loop (default 8)")
     parser.add_argument("--no-wait-heartbeat", action="store_true",
                         help="Start sending immediately (for local bench tests)")
+    parser.add_argument("--camera-warmup", type=float, default=2.0,
+                        help="Seconds to let camera auto exposure settle (default 2.0)")
+    parser.add_argument("--camera-exposure-us", type=int,
+                        help="Manual camera exposure time in microseconds")
+    parser.add_argument("--camera-gain", type=float,
+                        help="Manual camera analogue gain")
+    parser.add_argument("--camera-exposure-value", type=float, default=0.0,
+                        help="Auto-exposure compensation value (default 0.0)")
+    parser.add_argument("--auto-brighten", action="store_true",
+                        help="Normalize each frame before JPEG encoding for diagnostics")
+    parser.add_argument("--gcs-udpout",
+                        help="Also send image packets directly to HOST:PORT, e.g. 192.168.1.42:14550")
     parser.add_argument("--source-system", type=int, default=DEFAULT_SOURCE_SYSTEM,
                         help=f"MAVLink source system id (default {DEFAULT_SOURCE_SYSTEM})")
     parser.add_argument("--source-component", type=int, default=DEFAULT_SOURCE_COMPONENT,
@@ -231,6 +308,7 @@ def main():
     print(f"Connecting on {args.connection}...")
     master = mavutil.mavlink_connection(
         args.connection,
+        baud=args.baud,
         source_system=args.source_system,
         source_component=args.source_component,
     )
@@ -245,7 +323,19 @@ def main():
         master.wait_heartbeat()
         print(f"Heartbeat received (system {master.target_system})")
 
-    transfer = ImageStreamTransfer(master.mav, debug=args.debug)
+    mav_outputs = [master.mav]
+    if args.gcs_udpout:
+        gcs_connection = f"udpout:{args.gcs_udpout}"
+        print(f"Also sending image packets directly to {gcs_connection}")
+        gcs_master = mavutil.mavlink_connection(
+            gcs_connection,
+            baud=args.baud,
+            source_system=args.source_system,
+            source_component=args.source_component,
+        )
+        mav_outputs.append(gcs_master.mav)
+
+    transfer = ImageStreamTransfer(mav_outputs, debug=args.debug)
     last_send_time = 0.0
     cached_image = None
     camera_source = None
@@ -266,7 +356,15 @@ def main():
             print(f"  - {os.path.basename(path)}")
     else:
         print("Image source: Raspberry Pi Camera")
-        camera_source = PiCameraSource(args.width, args.height, debug=args.debug)
+        camera_source = PiCameraSource(
+            args.width,
+            args.height,
+            warmup=args.camera_warmup,
+            exposure_us=args.camera_exposure_us,
+            gain=args.camera_gain,
+            exposure_value=args.camera_exposure_value,
+            debug=args.debug,
+        )
 
     print(f"Stream size: {args.width}x{args.height} q={args.quality}")
 
@@ -303,7 +401,20 @@ def main():
 
             frame_number += 1
             if args.debug:
-                print(f"Frame #{frame_number}: source={label}, shape={img.shape}")
+                min_px, max_px, mean_px = image_stats(img)
+                print(
+                    f"Frame #{frame_number}: source={label}, shape={img.shape} "
+                    f"min={min_px} max={max_px} mean={mean_px:.1f}"
+                )
+
+            if args.auto_brighten:
+                img = auto_brighten(img)
+                if args.debug:
+                    min_px, max_px, mean_px = image_stats(img)
+                    print(
+                        "Auto-brightened frame: "
+                        f"min={min_px} max={max_px} mean={mean_px:.1f}"
+                    )
 
             jpeg_bytes = encode_preview(img, args.width, args.height, args.quality)
             if args.debug:
