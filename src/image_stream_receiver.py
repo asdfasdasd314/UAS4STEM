@@ -21,7 +21,7 @@ usually owned by one program at a time. Use Mission Planner or MAVProxy to open
 the GCS telemetry radio and forward a MAVLink copy to UDP.
 
 Run this receiver on the GCS laptop after UDP forwarding is configured:
-    python src/image_stream_receiver.py --connection udpin:0.0.0.0:14551
+    python src/image_stream_receiver.py --connection udpin:0.0.0.0:14550
 
 Windows GCS option A - MAVProxy owns the telemetry radio COM port and forwards
 copies to Mission Planner and this receiver:
@@ -38,6 +38,11 @@ forwards MAVLink to UDP:
     57600 or 115200, then forwards/output MAVLink UDP to 127.0.0.1:14551.
 
     python src/image_stream_receiver.py --connection udpin:0.0.0.0:14551
+
+Mission Planner forwarding matching this script's default:
+    Ctrl+F -> MAVLink -> UDP Host -> 127.0.0.1 -> 14550
+
+    python src/image_stream_receiver.py --connection udpin:0.0.0.0:14550
 
 Wi-Fi/direct UDP bench testing is still useful for proving image transmission
 before using the telemetry radio.

@@ -18,11 +18,29 @@ Field telemetry-radio architecture:
 Run on the Pi through the Pixhawk telemetry path:
     python3 src/image_stream_sender.py --connection /dev/serial0 --baud 57600
 
+If the Pixhawk is connected to the Pi by USB, first find the stable device name:
+    ls /dev/serial/by-id/
+
+Then use that full path:
+    python3 src/image_stream_sender.py \
+        --connection /dev/serial/by-id/usb-ArduPilot_Pixhawk1_12345 \
+        --baud 115200
+
 Common Raspberry Pi/Pixhawk serial paths:
-    /dev/serial0, /dev/ttyAMA0, /dev/ttyUSB0, /dev/ttyACM0
+    /dev/serial0, /dev/ttyAMA0, /dev/ttyUSB0, /dev/ttyACM0,
+    /dev/serial/by-id/<pixhawk-device>
 
 The baud rate must match the Pixhawk TELEM port configuration. Common values
 are 57600 and 115200.
+
+Pixhawk parameter setup example for a Pi on TELEM2:
+    SERIAL2_PROTOCOL = 2   # MAVLink2
+    SERIAL2_BAUD = 57      # 57600
+
+or:
+    SERIAL2_BAUD = 115     # 115200
+
+Reboot the Pixhawk after changing serial parameters.
 
 Wi-Fi/direct UDP bench testing is still useful for proving the camera,
 packetization, and receiver before using the telemetry radio.
@@ -47,7 +65,7 @@ from pymavlink import mavutil
 
 MAVLINK_DATA_STREAM_IMG_JPEG = 1
 CHUNK_PAYLOAD = 253
-DEFAULT_CONNECTION = "udpin:0.0.0.0:14550"
+DEFAULT_CONNECTION = "/dev/serial0"
 DEFAULT_BAUD = 57600
 DEFAULT_SOURCE_SYSTEM = 200
 DEFAULT_SOURCE_COMPONENT = 191
