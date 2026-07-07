@@ -56,6 +56,7 @@ Bench test without a camera (send a fixed file repeatedly):
 import argparse
 import math
 import os
+import sys
 import time
 from datetime import datetime
 
@@ -67,6 +68,7 @@ MAVLINK_DATA_STREAM_IMG_JPEG = 1
 CHUNK_PAYLOAD = 253
 DEFAULT_CONNECTION = "/dev/serial0"
 DEFAULT_BAUD = 57600
+DEFAULT_HEARTBEAT_TIMEOUT = 10.0
 DEFAULT_SOURCE_SYSTEM = 200
 DEFAULT_SOURCE_COMPONENT = 191
 
@@ -259,6 +261,36 @@ def save_jpeg(directory, jpeg_bytes, label, frame_number):
     return path
 
 
+def connection_is_serial(connection):
+    return "://" not in connection and ":" not in connection
+
+
+def print_heartbeat_help(args):
+    print("")
+    print("No MAVLink heartbeat was received.")
+    print("")
+    print("For telemetry-radio mode, this script must talk to the Pixhawk over")
+    print("the Pi -> Pixhawk serial link. The telemetry radio is downstream of")
+    print("the Pixhawk; the Pi should not use udpin:0.0.0.0:14550 for this path.")
+    print("")
+    print("Check these items on the Pi/Pixhawk:")
+    print("  1. Confirm the serial device exists:")
+    print("       ls -l /dev/serial0")
+    print("       ls /dev/serial/by-id/")
+    print("  2. If using USB, prefer the stable /dev/serial/by-id/<pixhawk-device> path.")
+    print("  3. Confirm the baud matches the Pixhawk SERIALx_BAUD parameter.")
+    print("       Try --baud 57600, then --baud 115200 if needed.")
+    print("  4. Confirm the Pixhawk port connected to the Pi is MAVLink2:")
+    print("       SERIALx_PROTOCOL = 2")
+    print("  5. Reboot the Pixhawk after changing SERIALx_* parameters.")
+    print("")
+    print("Current sender settings:")
+    print(f"  connection={args.connection}")
+    print(f"  baud={args.baud}")
+    print(f"  source_system={args.source_system}")
+    print(f"  source_component={args.source_component}")
+
+
 def main():
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     default_images_dir = os.path.join(project_root, "images")
@@ -271,6 +303,9 @@ def main():
     )
     parser.add_argument("--baud", type=int, default=DEFAULT_BAUD,
                         help=f"Serial MAVLink baud rate (default {DEFAULT_BAUD})")
+    parser.add_argument("--heartbeat-timeout", type=float,
+                        default=DEFAULT_HEARTBEAT_TIMEOUT,
+                        help=f"Seconds to wait for Pixhawk heartbeat (default {DEFAULT_HEARTBEAT_TIMEOUT})")
     parser.add_argument(
         "--image",
         help="Send this image file (for bench testing without a camera)",
@@ -323,6 +358,10 @@ def main():
     if args.source == "image-dir" and not args.image and not os.path.isdir(args.images_dir):
         os.makedirs(args.images_dir, exist_ok=True)
 
+    if connection_is_serial(args.connection) and not os.path.exists(args.connection):
+        print(f"Warning: serial device does not exist: {args.connection}")
+        print("Try: ls /dev/serial/by-id/  or check the Pixhawk/Pi cable.")
+
     print(f"Connecting on {args.connection}...")
     master = mavutil.mavlink_connection(
         args.connection,
@@ -337,8 +376,11 @@ def main():
     if args.no_wait_heartbeat:
         print("Skipping heartbeat wait (--no-wait-heartbeat)")
     else:
-        print("Waiting for heartbeat...")
-        master.wait_heartbeat()
+        print(f"Waiting for heartbeat ({args.heartbeat_timeout:.1f}s timeout)...")
+        msg = master.wait_heartbeat(timeout=args.heartbeat_timeout)
+        if msg is None:
+            print_heartbeat_help(args)
+            sys.exit(1)
         print(f"Heartbeat received (system {master.target_system})")
 
     mav_outputs = [master.mav]
