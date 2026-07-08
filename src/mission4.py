@@ -19,6 +19,7 @@ from maneuvers import (
 CONNECTION_STRING = 'udpin:0.0.0.0:14550'
 BOX_ALTITUDE_FT = 10.0
 BOX_ALTITUDE_M = BOX_ALTITUDE_FT * 0.3048
+MAX_GROUND_SPEED_MPS = 1.0
 
 # Enter the four corners of the box in flight order.
 # Replace each None with the latitude/longitude you want to fly.
@@ -37,6 +38,20 @@ def validate_waypoints():
                 f"Waypoint {index} is missing coordinates. "
                 f"Update BOX_WAYPOINTS in mission4.py before flying."
             )
+
+
+def set_speed_cap(master, speed_mps: float):
+    master.mav.command_long_send(
+        master.target_system,
+        master.target_component,
+        mavutil.mavlink.MAV_CMD_DO_CHANGE_SPEED,
+        0,
+        1,          # Ground speed
+        speed_mps,  # Speed in m/s
+        -1,         # No throttle change requested
+        0, 0, 0, 0,
+    )
+    print(f">>> Max ground speed set to {speed_mps:.1f} m/s")
 
 
 MISSION = [
@@ -132,6 +147,7 @@ def main():
     master.motors_armed_wait()
     print(">>> MOTORS ARMED!")
 
+    set_speed_cap(master, MAX_GROUND_SPEED_MPS)
     execute_mission(master, MISSION)
     mission_aborted.set()
 
