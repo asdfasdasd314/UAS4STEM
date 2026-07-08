@@ -2,63 +2,67 @@
 """
 UAS4STEM - GCS MAVLink image stream receiver
 ============================================
-Reassembles JPEG previews sent by image_stream_sender.py over the standard
-MAVLink image transmission protocol (DATA_TRANSMISSION_HANDSHAKE +
-ENCAPSULATED_DATA) and displays them in a live matplotlib window.
+Reassembles JPEG previews sent by the Pi image sender over the standard
+MAVLink image transmission protocol:
 
-Field telemetry-radio architecture:
+    DATA_TRANSMISSION_HANDSHAKE + ENCAPSULATED_DATA
+
+This receiver assumes the field architecture discussed for the drone:
+
     Pi camera
-      -> image_stream_sender.py on the Pi
-      -> Pi serial MAVLink connection to Pixhawk
-      -> Pixhawk telemetry radio
-      -> GCS telemetry radio
-      -> Mission Planner or MAVProxy UDP forwarding
-      -> image_stream_receiver.py
+      -> image_stream_sender_ethernet_pixhawk.py on the Pi
+      -> MAVLink over UDP/IP/Ethernet to the Pixhawk Ethernet IP
+      -> Pixhawk MAVLink routing
+      -> Pixhawk telemetry UART
+      -> air telemetry radio
+      -> ground telemetry radio
+      -> Windows USB serial device such as COM4
+      -> Mission Planner or MAVProxy
+      -> local UDP forwarding
+      -> this receiver
 
-The receiver normally listens on UDP. Do not open the telemetry radio COM port
-directly in this script if Mission Planner also needs it; a serial COM port is
-usually owned by one program at a time. Use Mission Planner or MAVProxy to open
-the GCS telemetry radio and forward a MAVLink copy to UDP.
+Important networking distinction:
+    COM4 is the Windows serial device for the GCS telemetry radio. Mission
+    Planner usually owns COM4. This receiver should normally NOT open COM4
+    directly, because a serial COM port is usually exclusive to one process.
 
-Run this receiver on the GCS laptop after UDP forwarding is configured:
-    python src/image_stream_receiver.py --connection udpin:0.0.0.0:14550
+Recommended GCS setup:
+    1. Mission Planner connects to the telemetry radio:
+           COM4 @ 57600
 
-Windows GCS option A - MAVProxy owns the telemetry radio COM port and forwards
-copies to Mission Planner and this receiver:
-    mavproxy.py --master=COM5 --baudrate 57600 \
-        --out=udp:127.0.0.1:14550 \
-        --out=udp:127.0.0.1:14551
+    2. Mission Planner forwards a MAVLink copy to UDP localhost:
+           127.0.0.1:14550
 
-    Mission Planner connects to UDP 127.0.0.1:14550.
-    image_stream_receiver.py listens on udpin:0.0.0.0:14551.
+    3. This receiver listens for that forwarded UDP stream:
+           python image_stream_receiver_gcs_udp.py
 
-Windows GCS option B - Mission Planner owns the telemetry radio COM port and
-forwards MAVLink to UDP:
-    Mission Planner connects to COM5 at the telemetry radio baud, commonly
-    57600 or 115200, then forwards/output MAVLink UDP to 127.0.0.1:14551.
+Default receiver connection:
+    udpin:0.0.0.0:14550
 
-    python src/image_stream_receiver.py --connection udpin:0.0.0.0:14551
+That means:
+    "Listen on UDP port 14550 on this GCS laptop."
 
-Mission Planner forwarding matching this script's default:
-    Ctrl+F -> MAVLink -> UDP Host -> 127.0.0.1 -> 14550
+It does NOT mean:
+    "Listen on the Pixhawk"
+    "Open COM4"
+    "Send to the Pi"
 
-    python src/image_stream_receiver.py --connection udpin:0.0.0.0:14550
+If Mission Planner is already using UDP 14550 for something else, forward to
+14551 instead and run:
+    python image_stream_receiver_gcs_udp.py --connection udpin:0.0.0.0:14551
 
-Wi-Fi/direct UDP bench testing is still useful for proving image transmission
-before using the telemetry radio.
-
-If Mission Planner already uses UDP port 14550, forward a copy of the
-telemetry stream and point this script at the forwarded port:
-    mavproxy.py --master=<vehicle-link> --out=udp:127.0.0.1:14551
-    python3 src/image_stream_receiver.py --connection udpin:0.0.0.0:14551
+Direct COM4 mode is possible only when Mission Planner is not using COM4:
+    python image_stream_receiver_gcs_udp.py --connection COM4 --baud 57600
 
 Bench test without an aircraft:
     # Terminal 1
-    python3 src/image_stream_receiver.py --connection udpin:0.0.0.0:14550
+    python image_stream_receiver_gcs_udp.py --connection udpin:0.0.0.0:14550
+
     # Terminal 2
-    python3 src/image_stream_sender.py --image path/to/test.jpg \\
+    python image_stream_sender_ethernet_pixhawk.py --image path/to/test.jpg \
         --connection udpout:127.0.0.1:14550 --no-wait-heartbeat
 """
+
 
 import argparse
 import os
@@ -73,6 +77,7 @@ from pymavlink import mavutil
 
 CHUNK_PAYLOAD = 253
 DEFAULT_CONNECTION = "udpin:0.0.0.0:14550"
+DEFAULT_BAUD = 57600
 
 
 def chunk_bytes(data_field):
@@ -201,12 +206,50 @@ def save_rgb_image(directory, rgb, frame_number):
     return path
 
 
+def connection_is_serial(connection):
+    """
+    Return True for simple serial-style connection strings such as COM4 or
+    /dev/ttyUSB0. UDP/TCP connection strings contain ':' and are not serial.
+    """
+    lowered = connection.lower()
+    if lowered.startswith(("udp", "tcp")):
+        return False
+    return "://" not in connection and ":" not in connection
+
+
+def print_networking_summary(args):
+    print("")
+    print("Receiver networking mode:")
+    if connection_is_serial(args.connection):
+        print(f"  Direct serial input: {args.connection} @ {args.baud}")
+        print("  Use this only if Mission Planner is NOT connected to the same COM port.")
+        print("  If Mission Planner owns COM4, use UDP forwarding instead:")
+        print("      --connection udpin:0.0.0.0:14550")
+    else:
+        print(f"  UDP/TCP MAVLink input: {args.connection}")
+        print("  Expected path:")
+        print("      ground radio -> COM4 -> Mission Planner/MAVProxy -> UDP -> this script")
+    print("")
+
 def main():
     parser = argparse.ArgumentParser(description="UAS4STEM MAVLink image receiver")
     parser.add_argument(
         "--connection",
         default=DEFAULT_CONNECTION,
-        help=f"MAVLink connection string (default {DEFAULT_CONNECTION})",
+        help=(
+            "MAVLink input connection. Default listens for Mission Planner/MAVProxy "
+            f"UDP forwarding on {DEFAULT_CONNECTION}. Use COM4 only if Mission "
+            "Planner is not using the radio."
+        ),
+    )
+    parser.add_argument(
+        "--baud",
+        type=int,
+        default=DEFAULT_BAUD,
+        help=(
+            "Serial baud rate used only for direct COM-port mode, e.g. "
+            "COM4 @ 57600. Ignored for UDP connections."
+        ),
     )
     parser.add_argument("--debug", action="store_true",
                         help="Print detailed receiver diagnostics")
@@ -221,7 +264,12 @@ def main():
     args = parser.parse_args()
 
     print(f"Listening for image stream on {args.connection}...")
-    master = mavutil.mavlink_connection(args.connection)
+    print_networking_summary(args)
+
+    if connection_is_serial(args.connection):
+        master = mavutil.mavlink_connection(args.connection, baud=args.baud)
+    else:
+        master = mavutil.mavlink_connection(args.connection)
     receiver = ImageStreamReceiver(debug=args.debug)
 
     fig = None
@@ -261,8 +309,10 @@ def main():
                 if total_messages == 0:
                     print(
                         "No MAVLink traffic is reaching this receiver. "
-                        "Check the receiver port and sender target; for direct Pi-to-laptop testing, "
-                        "run the sender with --gcs-udpout <laptop-ip>:14550."
+                        "For field use, Mission Planner/MAVProxy must own COM4 and forward "
+                        "a MAVLink copy to this UDP port. Check that Mission Planner is "
+                        "connected to COM4 and forwarding to the same port this script is "
+                        "listening on."
                     )
                 last_status = now
             continue
