@@ -17,9 +17,9 @@ from maneuvers import (
 # CONFIGURATION
 # ==============================================================================
 CONNECTION_STRING = 'udpin:0.0.0.0:14550'
-BOX_ALTITUDE_FT = 10.0
+BOX_ALTITUDE_FT = 25.0
 BOX_ALTITUDE_M = BOX_ALTITUDE_FT * 0.3048
-MAX_GROUND_SPEED_MPS = 1.0
+MAX_GROUND_SPEED_MPS = 0.5
 
 # Enter the four corners of the box in flight order.
 # Replace each None with the latitude/longitude you want to fly.

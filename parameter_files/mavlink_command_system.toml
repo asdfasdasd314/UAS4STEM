@@ -1,0 +1,27 @@
+pixhawk_connection = "udpout:192.168.144.10:14550"
+gcs_sender_connection = "udpin:0.0.0.0:14600"
+gcs_receiver_connection = "udpin:0.0.0.0:14601"
+link_loss_timeout_s = 10.0
+heartbeat_period_s = 1.0
+ack_timeout_s = 3.0
+process_stop_timeout_s = 3.0
+
+daemon_source_system = 200
+daemon_source_component = 191
+sender_source_system = 201
+sender_source_component = 191
+receiver_source_system = 202
+receiver_source_component = 191
+
+maneuver_scripts = [
+  "src/mission1.py",
+  "src/mission3.py",
+  "src/mission4.py",
+  "src/phase2_search.py",
+  "src/sitl_mission.py",
+]
+
+background_scripts = [
+  "src/image_stream_sender.py",
+  "src/qr_field_scanner.py",
+]
