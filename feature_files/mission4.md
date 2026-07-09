@@ -22,3 +22,4 @@ TESTING
 - 2026-07-09: Initialized the Mission 4 feature file in TESTING mode for the box-flight mission and its shared guided-navigation dependency.
 - 2026-07-09: Moved Mission 4 tunables into `parameter_files/mission4.toml` and reissued the requested ground-speed command with each guided waypoint update and RTL setup so box legs stop defaulting to the autopilot nav speed.
 - 2026-07-09: Added Mission 4 pre-arm waypoint radius checks, Pixhawk WPNAV confirmation, and `MAV_CMD_DO_CHANGE_SPEED` ACK validation so the box mission now blocks arming when speed safety limits are not positively confirmed.
+- 2026-07-09: Changed in-flight `MAV_CMD_DO_CHANGE_SPEED` ACK failures from mission-fatal aborts into pilot-facing warnings so Mission 4 keeps flying its active leg unless the human operator decides to intervene.

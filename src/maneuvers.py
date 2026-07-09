@@ -175,14 +175,14 @@ def set_ground_speed(master, speed_mps: float, announce: bool = True) -> bool:
     ack = wait_for_command_ack(master, mavutil.mavlink.MAV_CMD_DO_CHANGE_SPEED)
     if not ack:
         print(
-            f"[ERROR] Timed out waiting for COMMAND_ACK for MAV_CMD_DO_CHANGE_SPEED. "
+            f"[WARN] Timed out waiting for COMMAND_ACK for MAV_CMD_DO_CHANGE_SPEED. "
             f"Ground speed {speed_mps:.1f} m/s was not confirmed."
         )
         return False
 
     if ack.result != mavutil.mavlink.MAV_RESULT_ACCEPTED:
         print(
-            f"[ERROR] MAV_CMD_DO_CHANGE_SPEED was {_mav_result_name(ack.result)}. "
+            f"[WARN] MAV_CMD_DO_CHANGE_SPEED was {_mav_result_name(ack.result)}. "
             f"Ground speed {speed_mps:.1f} m/s was not applied."
         )
         return False
@@ -197,7 +197,10 @@ def goto_waypoint(master, lat: float, lon: float, alt: float, ground_speed_mps: 
         # Re-send the speed target with each GUIDED waypoint update so nav speed
         # does not fall back to the autopilot default between position commands.
         if not set_ground_speed(master, ground_speed_mps, announce=False):
-            return False
+            print(
+                "[WARN] Continuing GUIDED waypoint command without confirmed speed ACK. "
+                "Pilot may intervene if vehicle behavior is unsafe."
+            )
 
     master.mav.set_position_target_global_int_send(
         0,
@@ -301,7 +304,10 @@ def configure_wpnav_limits(master, ground_speed_mps: float, accel_mps2: float):
 def _do_takeoff(master, alt: float, ground_speed_mps: float | None = None):
     if ground_speed_mps is not None:
         if not set_ground_speed(master, ground_speed_mps):
-            return False
+            print(
+                "[WARN] Continuing takeoff without confirmed speed ACK. "
+                "Pilot may intervene if vehicle behavior is unsafe."
+            )
 
     master.mav.command_long_send(
         master.target_system, master.target_component,
@@ -323,14 +329,12 @@ def _do_takeoff(master, alt: float, ground_speed_mps: float | None = None):
 
 
 def _do_goto(master, lat: float, lon: float, alt: float, ground_speed_mps: float | None = None):
-    if not goto_waypoint(master, lat, lon, alt, ground_speed_mps=ground_speed_mps):
-        return False
+    goto_waypoint(master, lat, lon, alt, ground_speed_mps=ground_speed_mps)
     start = time.time()
     while True:
         if not wait_if_paused():
             return False
-        if not goto_waypoint(master, lat, lon, alt, ground_speed_mps=ground_speed_mps):
-            return False
+        goto_waypoint(master, lat, lon, alt, ground_speed_mps=ground_speed_mps)
 
         if time.time() - start > WAYPOINT_TIMEOUT:
             print(f"\n[WARN] GOTO timed out.")

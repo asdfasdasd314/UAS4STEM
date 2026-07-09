@@ -255,6 +255,16 @@ class GuidedSpeedCommandTests(unittest.TestCase):
         self.assertEqual(speed_command[5], 0.5)
         self.assertEqual(len(master.mav.position_target_calls), 1)
 
+    def test_goto_waypoint_continues_when_speed_ack_times_out(self):
+        master = FakeMaster()
+
+        with mock.patch("maneuvers.wait_for_command_ack", return_value=None):
+            result = maneuvers.goto_waypoint(master, 42.2989526, -83.8428926, 7.62, ground_speed_mps=0.5)
+
+        self.assertTrue(result)
+        self.assertEqual(len(master.mav.command_long_calls), 1)
+        self.assertEqual(len(master.mav.position_target_calls), 1)
+
     def test_configure_wpnav_limits_sets_and_reads_back_parameters(self):
         master = FakeMaster(
             messages=[
