@@ -13,6 +13,8 @@ from pymavlink import mavutil
 # ==============================================================================
 WAYPOINT_RADIUS  = 3.0   # Meters — considered "arrived" within this radius
 WAYPOINT_TIMEOUT = 60.0  # Seconds before giving up on a waypoint
+COMMAND_ACK_TIMEOUT = 2.0
+PARAM_TIMEOUT = 2.0
 
 # ==============================================================================
 # MISSION TYPES
@@ -108,7 +110,95 @@ def _haversine_distance(lat1, lon1, lat2, lon2) -> float:
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
-def goto_waypoint(master, lat: float, lon: float, alt: float):
+def distance_between_locations(lat1, lon1, lat2, lon2) -> float:
+    return _haversine_distance(lat1, lon1, lat2, lon2)
+
+
+def get_current_location(master, timeout: float = 2.0):
+    msg = master.recv_match(type='GLOBAL_POSITION_INT', blocking=True, timeout=timeout)
+    if not msg:
+        return None
+
+    return {
+        "lat": msg.lat / 1e7,
+        "lon": msg.lon / 1e7,
+        "relative_alt_m": msg.relative_alt / 1000.0,
+    }
+
+
+def _normalize_param_id(param_id) -> str:
+    if isinstance(param_id, bytes):
+        param_id = param_id.decode("ascii", errors="ignore")
+    return str(param_id).rstrip("\x00")
+
+
+def _mav_result_name(result: int) -> str:
+    result_names = {
+        mavutil.mavlink.MAV_RESULT_ACCEPTED: "ACCEPTED",
+        mavutil.mavlink.MAV_RESULT_TEMPORARILY_REJECTED: "TEMPORARILY_REJECTED",
+        mavutil.mavlink.MAV_RESULT_DENIED: "DENIED",
+        mavutil.mavlink.MAV_RESULT_UNSUPPORTED: "UNSUPPORTED",
+        mavutil.mavlink.MAV_RESULT_FAILED: "FAILED",
+        mavutil.mavlink.MAV_RESULT_IN_PROGRESS: "IN_PROGRESS",
+        mavutil.mavlink.MAV_RESULT_CANCELLED: "CANCELLED",
+    }
+    return result_names.get(result, f"UNKNOWN({result})")
+
+
+def wait_for_command_ack(master, command_id: int, timeout: float = COMMAND_ACK_TIMEOUT):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        ack = master.recv_match(type='COMMAND_ACK', blocking=True, timeout=max(0.1, deadline - time.time()))
+        if not ack:
+            continue
+        if getattr(ack, "command", None) != command_id:
+            continue
+        return ack
+    return None
+
+
+def set_ground_speed(master, speed_mps: float, announce: bool = True) -> bool:
+    master.mav.command_long_send(
+        master.target_system,
+        master.target_component,
+        mavutil.mavlink.MAV_CMD_DO_CHANGE_SPEED,
+        0,
+        1,
+        speed_mps,
+        -1,
+        0,
+        0,
+        0,
+        0,
+    )
+
+    ack = wait_for_command_ack(master, mavutil.mavlink.MAV_CMD_DO_CHANGE_SPEED)
+    if not ack:
+        print(
+            f"[ERROR] Timed out waiting for COMMAND_ACK for MAV_CMD_DO_CHANGE_SPEED. "
+            f"Ground speed {speed_mps:.1f} m/s was not confirmed."
+        )
+        return False
+
+    if ack.result != mavutil.mavlink.MAV_RESULT_ACCEPTED:
+        print(
+            f"[ERROR] MAV_CMD_DO_CHANGE_SPEED was {_mav_result_name(ack.result)}. "
+            f"Ground speed {speed_mps:.1f} m/s was not applied."
+        )
+        return False
+
+    if announce:
+        print(f">>> Ground speed target set to {speed_mps:.1f} m/s")
+    return True
+
+
+def goto_waypoint(master, lat: float, lon: float, alt: float, ground_speed_mps: float | None = None):
+    if ground_speed_mps is not None:
+        # Re-send the speed target with each GUIDED waypoint update so nav speed
+        # does not fall back to the autopilot default between position commands.
+        if not set_ground_speed(master, ground_speed_mps, announce=False):
+            return False
+
     master.mav.set_position_target_global_int_send(
         0,
         master.target_system, master.target_component,
@@ -119,9 +209,100 @@ def goto_waypoint(master, lat: float, lon: float, alt: float):
         0, 0, 0,
         0, 0
     )
+    return True
 
 
-def _do_takeoff(master, alt: float):
+def set_parameter(master, parameter_name: str, value: float, timeout: float = PARAM_TIMEOUT):
+    master.mav.param_set_send(
+        master.target_system,
+        master.target_component,
+        parameter_name.encode("ascii"),
+        float(value),
+        mavutil.mavlink.MAV_PARAM_TYPE_REAL32,
+    )
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        msg = master.recv_match(type='PARAM_VALUE', blocking=True, timeout=max(0.1, deadline - time.time()))
+        if not msg:
+            continue
+        if _normalize_param_id(msg.param_id) != parameter_name:
+            continue
+        return float(msg.param_value)
+    return None
+
+
+def read_parameter(master, parameter_name: str, timeout: float = PARAM_TIMEOUT):
+    master.mav.param_request_read_send(
+        master.target_system,
+        master.target_component,
+        parameter_name.encode("ascii"),
+        -1,
+    )
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        msg = master.recv_match(type='PARAM_VALUE', blocking=True, timeout=max(0.1, deadline - time.time()))
+        if not msg:
+            continue
+        if _normalize_param_id(msg.param_id) != parameter_name:
+            continue
+        return float(msg.param_value)
+    return None
+
+
+def configure_wpnav_limits(master, ground_speed_mps: float, accel_mps2: float):
+    target_speed_cm_s = round(ground_speed_mps * 100.0)
+    target_accel_cm_s2 = round(accel_mps2 * 100.0)
+
+    print(
+        f">>> Configuring ArduPilot nav limits: "
+        f"WPNAV_SPEED={target_speed_cm_s} cm/s, "
+        f"WPNAV_ACCEL={target_accel_cm_s2} cm/s^2"
+    )
+
+    set_speed_value = set_parameter(master, "WPNAV_SPEED", target_speed_cm_s)
+    if set_speed_value is None:
+        print("[ERROR] Timed out while setting WPNAV_SPEED on the flight controller.")
+
+    set_accel_value = set_parameter(master, "WPNAV_ACCEL", target_accel_cm_s2)
+    if set_accel_value is None:
+        print("[ERROR] Timed out while setting WPNAV_ACCEL on the flight controller.")
+
+    confirmed_speed = read_parameter(master, "WPNAV_SPEED")
+    if confirmed_speed is None:
+        print("[ERROR] Timed out while reading back WPNAV_SPEED from the flight controller.")
+
+    confirmed_accel = read_parameter(master, "WPNAV_ACCEL")
+    if confirmed_accel is None:
+        print("[ERROR] Timed out while reading back WPNAV_ACCEL from the flight controller.")
+
+    if confirmed_speed is not None:
+        print(f">>> Confirmed WPNAV_SPEED from Pixhawk: {confirmed_speed:.0f} cm/s")
+    if confirmed_accel is not None:
+        print(f">>> Confirmed WPNAV_ACCEL from Pixhawk: {confirmed_accel:.0f} cm/s^2")
+
+    return {
+        "target_speed_cm_s": float(target_speed_cm_s),
+        "target_accel_cm_s2": float(target_accel_cm_s2),
+        "set_speed_cm_s": set_speed_value,
+        "set_accel_cm_s2": set_accel_value,
+        "confirmed_speed_cm_s": confirmed_speed,
+        "confirmed_accel_cm_s2": confirmed_accel,
+        "success": (
+            confirmed_speed is not None
+            and confirmed_accel is not None
+            and round(confirmed_speed) == target_speed_cm_s
+            and round(confirmed_accel) == target_accel_cm_s2
+        ),
+    }
+
+
+def _do_takeoff(master, alt: float, ground_speed_mps: float | None = None):
+    if ground_speed_mps is not None:
+        if not set_ground_speed(master, ground_speed_mps):
+            return False
+
     master.mav.command_long_send(
         master.target_system, master.target_component,
         mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
@@ -141,13 +322,15 @@ def _do_takeoff(master, alt: float):
             return True
 
 
-def _do_goto(master, lat: float, lon: float, alt: float):
-    goto_waypoint(master, lat, lon, alt)
+def _do_goto(master, lat: float, lon: float, alt: float, ground_speed_mps: float | None = None):
+    if not goto_waypoint(master, lat, lon, alt, ground_speed_mps=ground_speed_mps):
+        return False
     start = time.time()
     while True:
         if not wait_if_paused():
             return False
-        goto_waypoint(master, lat, lon, alt)
+        if not goto_waypoint(master, lat, lon, alt, ground_speed_mps=ground_speed_mps):
+            return False
 
         if time.time() - start > WAYPOINT_TIMEOUT:
             print(f"\n[WARN] GOTO timed out.")
@@ -233,7 +416,11 @@ def _do_land(master):
     print(">>> LANDING COMPLETE.")
 
 
-def _do_rtl(master):
+def _do_rtl(master, ground_speed_mps: float | None = None):
+    if ground_speed_mps is not None:
+        if not set_ground_speed(master, ground_speed_mps):
+            print("[WARN] RTL speed target was not confirmed before return-to-launch.")
+
     master.mav.command_long_send(
         master.target_system, master.target_component,
         mavutil.mavlink.MAV_CMD_NAV_RETURN_TO_LAUNCH,
@@ -264,11 +451,11 @@ def execute_mission(master, mission: list[MissionItem]):
         p = item.params
 
         if item.cmd == Cmd.TAKEOFF:
-            if not _do_takeoff(master, p.get('alt', 50.0)):
+            if not _do_takeoff(master, p.get('alt', 50.0), p.get('ground_speed_mps')):
                 return False
 
         elif item.cmd == Cmd.GOTO:
-            if not _do_goto(master, p['lat'], p['lon'], p['alt']):
+            if not _do_goto(master, p['lat'], p['lon'], p['alt'], p.get('ground_speed_mps')):
                 return False
 
         elif item.cmd == Cmd.ORBIT:
@@ -301,7 +488,7 @@ def execute_mission(master, mission: list[MissionItem]):
             return True  # Nothing valid can follow a landing
 
         elif item.cmd == Cmd.RTL:
-            _do_rtl(master)
+            _do_rtl(master, p.get('ground_speed_mps'))
             return True  # Nothing valid can follow RTL
 
     print("\n>>> Mission complete.")

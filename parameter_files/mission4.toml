@@ -1,0 +1,33 @@
+connection_string = "udpin:0.0.0.0:14550"
+box_altitude_ft = 25.0
+
+# Mission 4 target ground speed in meters per second.
+max_ground_speed_mps = 0.5
+
+# ArduPilot WPNAV_ACCEL target in meters per second squared.
+# Mission 4 converts this to cm/s^2 before sending it to the Pixhawk.
+wpnav_accel_mps2 = 0.5
+
+# Reject the mission before arming if any waypoint is farther than this many meters
+# from the current GPS launch position.
+max_waypoint_distance_m = 150.0
+
+[[box_waypoints]]
+label = "Box Corner 1"
+lat = 42.2989526
+lon = -83.8428926
+
+[[box_waypoints]]
+label = "Box Corner 2"
+lat = 42.2987225
+lon = -83.8428605
+
+[[box_waypoints]]
+label = "Box Corner 3"
+lat = 42.2986670
+lon = -83.8436866
+
+[[box_waypoints]]
+label = "Box Corner 4"
+lat = 42.2989923
+lon = -83.8437080
