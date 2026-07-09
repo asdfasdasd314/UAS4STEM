@@ -19,6 +19,7 @@ maneuver_scripts = [
   "src/mission4.py",
   "src/phase2_search.py",
   "src/sitl_mission.py",
+  "src/test_maneuver.py",
 ]
 
 background_scripts = [

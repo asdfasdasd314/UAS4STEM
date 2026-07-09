@@ -11,6 +11,7 @@ The `mavlink_command_system` feature adds a low-bandwidth command and status cha
 - **STATUSTEXT Protocol**: The feature reuses compact MAVLink `STATUSTEXT` frames with short structured prefixes for commands, acknowledgements, events, logs, and heartbeats.
 
 ## Relevant Files
+- `parameter_files/mavlink_command_system.toml`: Whitelisted maneuver/background script registry and command-channel tuning values.
 - `src/mavlink_command_common.py`: Shared configuration loading, command parsing, protocol framing, and validation.
 - `src/mavlink_command_daemon.py`: Raspberry Pi sender/receiver daemon and subprocess supervisor.
 - `src/mavlink_command_sender.py`: GCS decision console for typed `START` and `STOP` commands.
@@ -24,3 +25,4 @@ PRODUCTION-READY
 - 2026-07-08: Initialized the MAVLink command system feature file in PRODUCTION-READY mode for the new daemon, sender, and receiver workflow.
 - 2026-07-08: Implemented the shared STATUSTEXT protocol, Pi daemon subprocess supervisor, split GCS sender/receiver scripts, and automated tests covering parsing, process control, and link-loss RTL behavior.
 - 2026-07-08: Simplified the MAVLink command system parameter file by removing per-script metadata blocks so it only keeps feature-owned connection, timeout, identity, and script registry settings.
+- 2026-07-09: Registered `src/test_maneuver.py` as a managed maneuver script and added a regression test that asserts the repo parameter file exposes it to the daemon.

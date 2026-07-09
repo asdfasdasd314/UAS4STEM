@@ -194,6 +194,10 @@ class DaemonBehaviorTests(unittest.TestCase):
     def _make_config(self):
         return load_system_config(REPO_ROOT / "parameter_files" / "mavlink_command_system.toml")
 
+    def test_repo_parameter_file_registers_test_maneuver(self):
+        config = self._make_config()
+        self.assertEqual(config.resolve_script("src/test_maneuver.py").category, "maneuver")
+
     def test_daemon_acknowledges_and_rejects_commands(self):
         config = self._make_config()
         master = FakeMaster()
