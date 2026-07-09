@@ -11,7 +11,7 @@ from maneuvers import (
     mode_monitor,
     mission_aborted,
     execute_mission,
-)
+    )
 
 # ==============================================================================
 # CONFIGURATION
@@ -24,10 +24,10 @@ MAX_GROUND_SPEED_MPS = 0.5
 # Enter the four corners of the box in flight order.
 # Replace each None with the latitude/longitude you want to fly.
 BOX_WAYPOINTS = [
-    {"label": "Box Corner 1", "lat": None, "lon": None},
-    {"label": "Box Corner 2", "lat": None, "lon": None},
-    {"label": "Box Corner 3", "lat": None, "lon": None},
-    {"label": "Box Corner 4", "lat": None, "lon": None},
+    {"label": "Box Corner 1", "lat": 42.2989526, "lon": -83.8428926},
+    {"label": "Box Corner 2", "lat": 42.2987225, "lon": -83.8428605},
+    {"label": "Box Corner 3", "lat": 42.2986670, "lon": -83.8436866},
+    {"label": "Box Corner 4", "lat": 42.2989923, "lon": -83.8437080},
 ]
 
 
