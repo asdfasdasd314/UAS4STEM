@@ -1,0 +1,40 @@
+# Mission Planner IronPython cannot load this file at runtime.
+# Mirror these values into the USER CONFIGURATION block of missionplanner_script.py.
+
+flight_altitude_ft = 25.0
+
+# Start at 2.0 m/s for first tests (~4.5 mph).
+ground_speed_mps = 2.0
+
+# Return to corner 1 before RTL so the flown path closes the box.
+close_box = true
+
+# Transmitter mode that immediately stops the script without overriding pilot control.
+abort_mode = "LOITER"
+
+waypoint_arrival_radius_m = 2.0
+waypoint_timeout_ms = 90000
+takeoff_timeout_ms = 60000
+arm_timeout_ms = 15000
+poll_interval_ms = 250
+
+# Replace placeholder corners with the real box before flight.
+[[box_waypoints]]
+label = "Box Corner 1"
+lat = 42.0000000
+lon = -83.0000000
+
+[[box_waypoints]]
+label = "Box Corner 2"
+lat = 42.0000000
+lon = -82.9999000
+
+[[box_waypoints]]
+label = "Box Corner 3"
+lat = 42.0001000
+lon = -82.9999000
+
+[[box_waypoints]]
+label = "Box Corner 4"
+lat = 42.0001000
+lon = -83.0000000

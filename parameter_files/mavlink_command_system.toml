@@ -1,4 +1,6 @@
-pixhawk_connection = "udpout:192.168.144.10:14550"
+# Canonical Pixhawk Ethernet target for Pi-side MAVLink clients.
+pixhawk_ip = "192.168.13.10"
+pixhawk_connection = "udpout:192.168.13.10:14550"
 gcs_sender_connection = "udpin:0.0.0.0:14600"
 gcs_receiver_connection = "udpin:0.0.0.0:14601"
 link_loss_timeout_s = 10.0

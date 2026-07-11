@@ -26,3 +26,4 @@ PRODUCTION-READY
 - 2026-07-08: Implemented the shared STATUSTEXT protocol, Pi daemon subprocess supervisor, split GCS sender/receiver scripts, and automated tests covering parsing, process control, and link-loss RTL behavior.
 - 2026-07-08: Simplified the MAVLink command system parameter file by removing per-script metadata blocks so it only keeps feature-owned connection, timeout, identity, and script registry settings.
 - 2026-07-09: Registered `src/test_maneuver.py` as a managed maneuver script and added a regression test that asserts the repo parameter file exposes it to the daemon.
+- 2026-07-09: Updated the shared Pixhawk Ethernet target in `parameter_files/mavlink_command_system.toml` to `192.168.13.10` and stored the raw IP alongside the full `udpout` connection string for reuse by Pi-side MAVLink tools.
