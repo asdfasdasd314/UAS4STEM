@@ -36,10 +36,10 @@ POLL_INTERVAL_MS = 250
 
 # Replace with real box corners before flight.
 WAYPOINTS = [
-    (42.0000000, -83.0000000),  # Corner 1
-    (42.0000000, -82.9999000),  # Corner 2
-    (42.0001000, -82.9999000),  # Corner 3
-    (42.0001000, -83.0000000),  # Corner 4
+    (42.2989526, -83.8428926),  # Corner 1
+    (42.2987225, -83.8428605),  # Corner 2
+    (42.2986670, -83.8436866),  # Corner 3
+    (42.2989923, -83.8437080),  # Corner 4
 ]
 
 FLIGHT_ALTITUDE_M = FLIGHT_ALTITUDE_FT * 0.3048
